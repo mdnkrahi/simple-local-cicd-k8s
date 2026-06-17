@@ -1,0 +1,113 @@
+pipeline {
+    agent any
+
+    environment {
+        GITHUB_CREDENTIALS = credentials('github-creds')   // GitHub PAT with write:packages scope
+        GITHUB_REPO = 'ghcr.io/yourusername/devops-html-demo'   // <-- CHANGE 'yourusername'
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
+        K8S_NAMESPACE = 'devops-demo'
+        APP_NAME = 'devops-html-demo'
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '8'))
+        timeout(time: 20, unit: 'MINUTES')
+    }
+
+    triggers {
+        githubPush()   // Requires GitHub plugin + webhook configured
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                echo "🔄 Checking out code from GitHub..."
+                checkout scm
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                echo "🐳 Building Nginx + HTML Docker image..."
+                dir('app') {
+                    sh """
+                        docker build -t ${GITHUB_REPO}:${IMAGE_TAG} .
+                        docker tag ${GITHUB_REPO}:${IMAGE_TAG} ${GITHUB_REPO}:latest
+                    """
+                }
+            }
+        }
+
+        stage('Push to GitHub Container Registry') {
+            steps {
+                echo "📤 Pushing image to GitHub Container Registry (ghcr.io)..."
+                withCredentials([usernamePassword(credentialsId: 'github-creds', 
+                                                 usernameVariable: 'GITHUB_USER', 
+                                                 passwordVariable: 'GITHUB_TOKEN')]) {
+                    sh """
+                        echo $GITHUB_TOKEN | docker login ghcr.io -u $GITHUB_USER --password-stdin
+                        docker push ${GITHUB_REPO}:${IMAGE_TAG}
+                        docker push ${GITHUB_REPO}:latest
+                    """
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                echo "🚀 Deploying to local Kubernetes (Kind/Minikube)..."
+                script {
+                    // Create namespace if not exists
+                    sh "kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -"
+                    
+                    // Apply Kubernetes manifests
+                    sh "kubectl apply -f k8s/ -n ${K8S_NAMESPACE}"
+                    
+                    // Update image in deployment
+                    sh """
+                        kubectl set image deployment/${APP_NAME} \
+                            nginx=${GITHUB_REPO}:${IMAGE_TAG} \
+                            -n ${K8S_NAMESPACE}
+                    """
+                    
+                    // Wait for rollout
+                    sh """
+                        kubectl rollout status deployment/${APP_NAME} \
+                            -n ${K8S_NAMESPACE} --timeout=120s
+                    """
+                }
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                echo "✅ Checking deployment status..."
+                sh """
+                    echo "=== Pods ==="
+                    kubectl get pods -n ${K8S_NAMESPACE} -l app=${APP_NAME}
+                    
+                    echo "\n=== Service ==="
+                    kubectl get svc ${APP_NAME} -n ${K8S_NAMESPACE}
+                """
+            }
+        }
+    }
+
+    post {
+        success {
+            echo """
+            ============================================
+            🎉 SUCCESS! Your HTML site is now live on Kubernetes!
+            
+            To access it locally, run:
+            kubectl port-forward svc/${APP_NAME} 8080:80 -n ${K8S_NAMESPACE}
+            
+            Then open: http://localhost:8080
+            ============================================
+            """
+        }
+        failure {
+            echo "❌ Pipeline failed. Please check the logs above."
+        }
+    }
+}
