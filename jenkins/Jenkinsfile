@@ -3,7 +3,7 @@ pipeline {
 
     environment {
         GITHUB_CREDENTIALS = credentials('github-creds')   // GitHub PAT with write:packages scope
-        GITHUB_REPO = 'ghcr.io/yourusername/devops-html-demo'   // <-- CHANGE 'yourusername'
+        GITHUB_REPO = 'https://github.com/mdnkrahi/simple-local-cicd-k8s.git'   // <-- CHANGE 'yourusername'
         IMAGE_TAG = "${env.BUILD_NUMBER}"
         K8S_NAMESPACE = 'devops-demo'
         APP_NAME = 'devops-html-demo'
