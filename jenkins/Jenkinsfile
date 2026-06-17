@@ -3,7 +3,7 @@ pipeline {
 
     environment {
         GITHUB_CREDENTIALS = credentials('github-creds')   // GitHub PAT with write:packages scope
-        GITHUB_REPO = 'ghcr.io/mdnkrahi/devops-html-demo'   // <-- CHANGE 'yourusername'
+        GITHUB_REPO = 'ghcr.io/yourusername/devops-html-demo'   // <-- CHANGE 'yourusername'
         IMAGE_TAG = "${env.BUILD_NUMBER}"
         K8S_NAMESPACE = 'devops-demo'
         APP_NAME = 'devops-html-demo'
@@ -23,6 +23,25 @@ pipeline {
             steps {
                 echo "🔄 Checking out code from GitHub..."
                 checkout scm
+            }
+        }
+
+        stage('Create Image Pull Secret') {
+            steps {
+                echo "🔐 Creating/Updating GitHub Container Registry secret for Kubernetes..."
+                withCredentials([usernamePassword(credentialsId: 'github-creds', 
+                                                 usernameVariable: 'GITHUB_USER', 
+                                                 passwordVariable: 'GITHUB_TOKEN')]) {
+                    sh """
+                        kubectl create secret docker-registry ghcr-secret \
+                          --docker-server=ghcr.io \
+                          --docker-username=$GITHUB_USER \
+                          --docker-password=$GITHUB_TOKEN \
+                          --docker-email=jenkins@example.com \
+                          -n ${K8S_NAMESPACE} \
+                          --dry-run=client -o yaml | kubectl apply -f -
+                    """
+                }
             }
         }
 
@@ -70,10 +89,16 @@ pipeline {
                             -n ${K8S_NAMESPACE}
                     """
                     
+                    // Patch deployment to use imagePullSecrets (for private ghcr.io)
+                    sh """
+                        kubectl patch deployment/${APP_NAME} -n ${K8S_NAMESPACE} -p \
+                        '{"spec":{"template":{"spec":{"imagePullSecrets":[{"name":"ghcr-secret"}]}}}}'
+                    """
+                    
                     // Wait for rollout
                     sh """
                         kubectl rollout status deployment/${APP_NAME} \
-                            -n ${K8S_NAMESPACE} --timeout=120s
+                            -n ${K8S_NAMESPACE} --timeout=180s
                     """
                 }
             }
